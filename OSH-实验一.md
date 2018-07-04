@@ -68,7 +68,7 @@ qemu-system-x86_64 -kernel $(path)/bzImage -initrd rootfs.img -s -S
 
 ####工具的安装
 
-安装 Linux17.10 Ubuntu 发行版，更新软件，安装 qemu。使用的软件版本分别为 GNU gdb 8.0.1 和 qemu 2.10。gdb 8 以下的版本都发现在调试 64 位内核时有溢出的bug，而打补丁重新编译安装较低版本的gdb过于繁琐，索性升级Ubuntu至自带 gdb 8.0.1的 17.10 发行版。此外搭建一个 initrd.img 用到国人开发的一个搭建简单的MenuOS 的相关[工具](https://github.com/mengning/menu)。
+安装 Linux17.10 Ubuntu 发行版，使用的软件版本分别为 GNU gdb 8.0.1 和 qemu 2.10。
 
 ####环境的搭建
 
@@ -95,7 +95,7 @@ find . | cpio -o -Hnewc |gzip -9 > ../rootfs.img
 //制作initrd.img，这里命名作 rootfs.img，需要根据相关提示安装gzip等工具
 
 cd ..
-qemu-system-x86_64 -kernel linux-3.18.102/arch/x86/boot/bzImage -intrd rootfs.img 
+qemu-system-x86_64 -kernel linux-3.18.103/arch/x86_64/boot/bzImage -initrd rootfs.img 
 //尝试启动内核
 
 make menuconfig
@@ -107,7 +107,7 @@ make -j8
 ####开始调试
 
 ```shell
-qemu-system-x86_64 -kernel linux-3.18.102/arch/x86/boot/bzImage -initrd rootfs.img -s -S
+qemu-system-x86_64 -kernel linux-3.18.103/arch/x86_64/boot/bzImage -initrd rootfs.img -s -S
 //启动内核并冻结，待gdb远程调试
 ```
 
@@ -115,7 +115,7 @@ qemu-system-x86_64 -kernel linux-3.18.102/arch/x86/boot/bzImage -initrd rootfs.i
 
 ```shell
 gdb
-(gdb)file Kernel/linux-3.18.102/vmlinux
+(gdb)file Kernel/linux-3.18.103/vmlinux
 //装载调试的目标内核文件
 (gdb)target remote:1234
 //连接qemu的远程调试端口
@@ -131,13 +131,56 @@ gdb
 
 内核启动初始化的入口在 linux-3.18.102/init/main.c 文件的 start_kernel() 函数中，里面调用的函数都可以说是内核启动的关键事件，这里着重追踪里面调用的 acpi_subsystem_init() 函数和 rest_init() 函数。
 
-### acpi_subsystem_init() 
+### acpi_subsystem_init()
 
 in linux-3.18.102 /drivers/acpi/bus.c
 
-这一函数对应的事件是完成内核启动阶段中 ACPI 的初始化的最终阶段。ACPI 是 Advanced Configuration and Power Interface (高级配置和电源管理接口)的缩写，其作用包括处理器，系统，外设的电源管理，温度管理等，能根据实际计算机的使用情况控制系统设备的功耗，提高系统性能和降低功耗。
+​	这一函数对应的事件是完成内核启动阶段中 ACPI 的初始化的最终阶段。ACPI 是 Advanced Configuration and Power Interface (高级配置和电源管理接口)的缩写，其作用包括处理器，系统，外设的电源管理，温度管理等，能根据实际计算机的使用情况控制系统设备的功耗，提高系统性能和降低功耗。
 
-这一事件执行完成后，系统平台的电源管理从简单的 bios 模式切换到了 ACPI 模式(当平台支持时)，同时初始化了 ACPI 事件的管理，并安装了中断和全局锁管理器。
+​	这一事件执行完成后，系统平台的电源管理从简单的 bios 模式切换到了 ACPI 模式(当平台支持时)，同时初始化了 ACPI 事件的管理，并安装了中断和全局锁管理器。
+
+#### 在该函数处设置断点, 初调用时:
+
+```
+(gdb) info stack
+#0  acpi_subsystem_init () at drivers/acpi/bus.c:563
+#1  0xffffffff81eefe64 in start_kernel () at init/main.c:670
+#2  0xffffffff81eef2f2 in x86_64_start_reservations (
+    real_mode_data=<optimized out>) at arch/x86/kernel/head64.c:195
+#3  0xffffffff81eef413 in x86_64_start_kernel (
+    real_mode_data=0x140c0 <error: Cannot access memory at address 0x140c0>) at arch/x86/kernel/head64.c:184
+#4  0x0000000000000000 in ?? ()
+```
+
+```
+(gdb) info registers
+rax            0x0      0
+rbx            0xffffffffffffffff       -1
+rcx            0xffffffff81e03f60       -2116010144
+rdx            0x0      0
+rsi            0x80000000       2147483648
+rdi            0x80000000       2147483648
+rbp            0xffffffff81e03fb0       0xffffffff81e03fb0 <init_thread_union+16304>
+rsp            0xffffffff81e03f80       0xffffffff81e03f80 <init_thread_union+16256>
+r8             0x20d2000        34414592
+r9             0xffff880000000000       -131941395333120
+r10            0x8000000000000163       -9223372036854775453
+r11            0x1      1
+r12            0xffff880007f70b80       -131941261702272
+r13            0xffffffff81f93920       -2114373344
+r14            0xffffffff81f9b2e0       -2114342176
+r15            0x0      0
+rip            0xffffffff81f26dcf       0xffffffff81f26dcf <acpi_subsystem_init>
+eflags         0x292    [ AF SF IF ]
+cs             0x10     16
+ss             0x0      0
+ds             0x0      0
+es             0x0      0
+fs             0x0      0
+gs             0x0      0
+```
+
+#### 随后单步执行该函数, 观察每一步的动作并记录:
 
 ```c
 void __init acpi_subsystem_init(void)
@@ -165,7 +208,50 @@ void __init acpi_subsystem_init(void)
 
 in linux-3.18.102 /init/main.c
 
-这一事件是内核初始化阶段到用户空间初始化阶段的分界，意指完成剩余部分的初始化工作。注意在调用函数 start_kernel() 前内核创建了一个pid = 0 的 0 号进程，它在内核初始化时唯一运行，为加载系统，初始化服务。后来这个进程演化为 idle 进程，负责进程调度，交换和系统空闲资源占用的工作。
+​	这一事件是内核初始化阶段到用户空间初始化阶段的分界，意指完成剩余部分的初始化工作。注意在调用函数 start_kernel() 前内核创建了一个pid = 0 的 0 号进程，它在内核初始化时唯一运行，为加载系统，初始化服务。后来这个进程演化为 idle 进程，负责进程调度，交换和系统空闲资源占用的工作。
+
+#### 在该函数处设置断点, 初调用时:
+
+```
+(gdb) info stack
+#0  rest_init () at init/main.c:394
+#1  0xffffffff81eefe7e in start_kernel () at init/main.c:681
+#2  0xffffffff81eef2f2 in x86_64_start_reservations (
+    real_mode_data=<optimized out>) at arch/x86/kernel/head64.c:195
+#3  0xffffffff81eef413 in x86_64_start_kernel (
+    real_mode_data=0x140c0 <error: Cannot access memory at address 0x140c0>) at arch/x86/kernel/head64.c:184
+#4  0x0000000000000000 in ?? ()
+```
+
+```
+(gdb) info registers
+rax            0x0      0
+rbx            0xffffffffffffffff       -1
+rcx            0x0      0
+rdx            0xffffffff81be803a       -2118221766
+rsi            0xa9     169
+rdi            0x604    1540
+rbp            0xffffffff81e03fb0       0xffffffff81e03fb0 <init_thread_union+16304>
+rsp            0xffffffff81e03f80       0xffffffff81e03f80 <init_thread_union+16256>
+r8             0xcf8    3320
+r9             0x2      2
+r10            0x8000000000000163       -9223372036854775453
+r11            0x1      1
+r12            0xffff880007f70b80       -131941261702272
+r13            0xffffffff81f93920       -2114373344
+r14            0xffffffff81f9b2e0       -2114342176
+r15            0x0      0
+rip            0xffffffff81832ae0       0xffffffff81832ae0 <rest_init>
+eflags         0x246    [ PF ZF IF ]
+cs             0x10     16
+ss             0x0      0
+ds             0x0      0
+es             0x0      0
+fs             0x0      0
+gs             0x0      0
+```
+
+#### 随后单步执行该函数, 观察每一步的动作并记录:
 
 ```c
 static noinline void __init_refok rest_init(void)
